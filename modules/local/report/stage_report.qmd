@@ -104,15 +104,24 @@ for (jf in jsons) {
 # sample, and stopping at the first meant only that sample was ever read. QC's
 # column is `status_flag`, which was not in the list, so a library dropped as
 # SAMPLE:FIXABLE still produced "completed with nothing flagged".
-st_v <- character(0); st_src <- character(0)
+st_v <- character(0); st_src <- character(0); st_lab <- character(0); st_raw <- character(0)
 for (nm in names(tabs)) {
   d <- tabs[[nm]]
   sc <- intersect(c(params$status_col, "status", "status_flag", "verdict", "qc_status", "pass"), names(d))
   if (length(sc)) {
+    st_raw <- c(st_raw, as.character(d[[sc[1]]]))
     st_v   <- c(st_v, tolower(as.character(d[[sc[1]]])))
+    st_lab <- c(st_lab, as.character(d[[key_guess(d)]]))
     st_src <- c(st_src, sprintf("`%s`", nm))
   }
 }
+# The verdict chunk below draws one tile per entry from `status_tab`. Built
+# from EVERY table read above (one row per entry), not the first table only.
+status_tab <- if (length(st_v))
+  list(name = if (length(unique(st_src)) == 1) unique(st_src)
+              else sprintf("%d tables", length(unique(st_src))),
+       d = data.frame(entry = st_lab, status = st_raw, stringsAsFactors = FALSE),
+       col = "status") else NULL
 if (length(st_v)) {
   src  <- sprintf("From the status column of %s.", paste(unique(st_src), collapse = ", "))
   nbad <- sum(grepl("fail|critical|error", st_v))
@@ -207,8 +216,8 @@ scratch_tiles(tiles)
 if (!is.null(status_tab)) {
   v <- as.character(status_tab$d[[status_tab$col]])
   map <- ifelse(grepl("fail|critical|error", tolower(v)), "critical",
-         ifelse(grepl("warn|caution", tolower(v)), "warning", "good"))
-  lab <- as.character(status_tab$d[[key_guess(status_tab$d)]])
+         ifelse(grepl("warn|caution|fixable", tolower(v)), "warning", "good"))
+  lab <- as.character(status_tab$d$entry)
   if (length(lab) == length(map) && length(map) <= 60)
     scratch_verdict(setNames(map, lab), labels = lab)
 }
