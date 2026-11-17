@@ -231,10 +231,39 @@ This sample has been flag as <strong>`r status_flag`</strong>
 ```{r seurat_object}
 
 expression_matrix <- Read10X_h5(filename = input_gex_matrices)
+
+# A library with feature barcoding (CITE-seq antibodies, or hashtags from
+# cellranger multi) makes Read10X_h5 return a LIST with one matrix per feature
+# type, and CreateSeuratObject cannot take a list. RNA QC runs on "Gene
+# Expression" exactly as before; "Antibody Capture" is carried as an ADT assay
+# for the same cells. ADT never filters cells here -- it is reported, not used.
+adt_matrix <- NULL
+if (is.list(expression_matrix)) {
+  .types <- names(expression_matrix)
+  if (!"Gene Expression" %in% .types)
+    stop("The count matrix has no 'Gene Expression' features (found: ",
+         paste(.types, collapse = ", "), "). RNA QC needs them.")
+  adt_matrix <- expression_matrix[["Antibody Capture"]]
+  .other <- setdiff(.types, c("Gene Expression", "Antibody Capture"))
+  if (length(.other))
+    message("Feature type(s) not carried into the object: ", paste(.other, collapse = ", "))
+  expression_matrix <- expression_matrix[["Gene Expression"]]
+}
+
 seurat_object = CreateSeuratObject(
   counts = expression_matrix,
   project = sample_name
 )
+
+has_adt <- !is.null(adt_matrix) && nrow(adt_matrix) > 0
+if (has_adt) {
+  # Seurat turns "_" into "-" in feature names (CD3_TotalSeqB -> CD3-TotalSeqB)
+  # and warns once per name; the rename is harmless, the warnings are noise.
+  rownames(adt_matrix) <- gsub("_", "-", rownames(adt_matrix), fixed = TRUE)
+  seurat_object[["ADT"]] <- CreateAssayObject(
+    counts = adt_matrix[, colnames(seurat_object), drop = FALSE])
+  DefaultAssay(seurat_object) <- "RNA"
+}
 
 # Calculating mitochondrial content
 
@@ -619,6 +648,131 @@ ggplot(wf, aes(step, cells, fill = step, text = tip)) +
                           100 * n_observed_cells / max(1, n_total_cells)),
        x = NULL, y = "cells") +
   theme_scratch()
+```
+
+```{r adt-qc, results = 'asis', message = FALSE, warning = FALSE}
+#| fig-width: 8
+#| fig-height: 4.5
+# Antibody-derived tags (CITE-seq). Reported for the cells that passed RNA QC;
+# nothing here removes a cell. Written to <sample>_adt_qc.csv (one row per
+# antibody) and <sample>_adt_summary.csv (one row for the library).
+if (has_adt) {
+  cat("\n\n## Antibody (ADT) QC {#adt-qc}\n\n")
+
+  .adt <- SeuratObject::GetAssayData(seurat_object, assay = "ADT", layer = "counts")
+  .rna_umi <- seurat_object$nCount_RNA
+  .adt_umi <- Matrix::colSums(.adt)
+  .adt_det <- Matrix::colSums(.adt > 0)
+
+  # Isotype controls bind nothing specific, so their counts measure background.
+  # Panel names vary: Iso_mIgG1, IgG1_control_TotalSeqB, Mouse-IgG2a-isotype...
+  .is_iso <- grepl("isotype|^iso[-_]|control|ctrl", rownames(.adt), ignore.case = TRUE)
+  .iso_frac <- if (any(.is_iso))
+    Matrix::colSums(.adt[.is_iso, , drop = FALSE]) / pmax(1, .adt_umi) else rep(NA_real_, ncol(.adt))
+
+  # cellranger's own antibody metrics: "Antibody: ..." columns (count, wide) or
+  # Library Type == "Antibody Capture" rows (multi, long).
+  .cr <- if (all(c("Metric Name", "Metric Value") %in% colnames(raw_metrics))) {
+    .ab <- raw_metrics %>% dplyr::filter(`Library Type` == "Antibody Capture")
+    setNames(as.list(clean_numeric(.ab$`Metric Value`)), .ab$`Metric Name`)
+  } else {
+    .w <- raw_metrics[, grepl("^Antibody: ", colnames(raw_metrics)), drop = FALSE]
+    setNames(lapply(.w, clean_numeric), sub("^Antibody: ", "", colnames(.w)))
+  }
+  .crv <- function(pattern) {
+    k <- grep(pattern, names(.cr), ignore.case = TRUE, value = TRUE)
+    if (length(k)) .cr[[k[1]]] else NA_real_
+  }
+
+  adt_summary <- tibble::tibble(
+    sample_id                    = sample_name,
+    n_antibodies                 = nrow(.adt),
+    n_isotype_controls           = sum(.is_iso),
+    n_cells                      = ncol(.adt),
+    median_adt_umi_per_cell      = stats::median(.adt_umi),
+    median_antibodies_detected   = stats::median(.adt_det),
+    pct_cells_zero_adt           = 100 * mean(.adt_umi == 0),
+    median_isotype_pct           = 100 * stats::median(.iso_frac),
+    cr_adt_reads                 = .crv("^Number of Reads$"),
+    cr_adt_mean_reads_per_cell   = .crv("^Mean Reads per Cell$|^Mean reads per cell$"),
+    cr_adt_sequencing_saturation = .crv("Sequencing Saturation"),
+    cr_adt_fraction_usable       = .crv("Fraction Antibody Reads Usable"),
+    cr_adt_fraction_unrecognized = .crv("Fraction Unrecognized Antibody"),
+    cr_adt_reads_in_cells        = .crv("Antibody Reads in Cells")
+  )
+
+  .tot <- Matrix::rowSums(.adt)
+  adt_per_antibody <- tibble::tibble(
+    antibody            = rownames(.adt),
+    isotype_control     = .is_iso,
+    total_umi           = as.numeric(.tot),
+    pct_of_adt_umi      = 100 * as.numeric(.tot) / max(1, sum(.tot)),
+    pct_cells_detected  = 100 * as.numeric(Matrix::rowSums(.adt > 0)) / ncol(.adt),
+    median_umi_detected = vapply(seq_len(nrow(.adt)), function(i) {
+      v <- .adt[i, ]; v <- v[v > 0]; if (length(v)) stats::median(v) else 0
+    }, numeric(1))
+  ) %>% dplyr::arrange(dplyr::desc(total_umi))
+
+  write_csv(adt_summary,      file = paste0(sample_name, '_adt_summary.csv'))
+  write_csv(adt_per_antibody, file = paste0(sample_name, '_adt_qc.csv'))
+
+  .m <- sprintf(paste(
+    "**%d antibodies** (%d isotype control%s) measured in **%s** cells that passed RNA QC.",
+    "Median **%s ADT UMIs** and **%s antibodies detected** per cell; %.1f%% of cells have no ADT counts.",
+    "ADT counts are carried in the object's `ADT` assay and **did not filter any cell**."),
+    nrow(.adt), sum(.is_iso), if (sum(.is_iso) == 1) "" else "s",
+    format(ncol(.adt), big.mark = ","),
+    format(round(adt_summary$median_adt_umi_per_cell), big.mark = ","),
+    format(round(adt_summary$median_antibodies_detected)), adt_summary$pct_cells_zero_adt)
+  if (any(.is_iso))
+    .m <- paste(.m, sprintf("Isotype controls take a median **%.1f%%** of a cell's ADT counts (background).",
+                            adt_summary$median_isotype_pct))
+  if (!is.na(adt_summary$cr_adt_fraction_usable))
+    .m <- paste(.m, sprintf("cellranger: %.1f%% of antibody reads usable, %.1f%% unrecognized.",
+                            adt_summary$cr_adt_fraction_usable,
+                            adt_summary$cr_adt_fraction_unrecognized))
+  .bad <- isTRUE(adt_summary$median_adt_umi_per_cell == 0)
+  scratch_finding(paste(.m, if (.bad)
+    "**The median cell has no antibody counts**: check the feature reference (barcode sequences, read, pattern) against the panel actually used." else ""),
+    type = if (.bad) "caution" else "note", title = "Antibody capture")
+
+  scratch_table(adt_summary %>% tidyr::pivot_longer(-sample_id, names_to = "metric",
+                                                    values_to = "value",
+                                                    values_transform = as.character) %>%
+                  dplyr::select(-sample_id),
+                caption = "ADT library summary (cr_* = cellranger's antibody metrics)")
+
+  .pa <- adt_per_antibody
+  .pa$kind <- factor(ifelse(.pa$isotype_control, "isotype control", "antibody"),
+                     levels = c("antibody", "isotype control"))
+  .pa$tip <- sprintf("%s\n%s UMIs (%.2f%%)\ndetected in %.1f%% of cells",
+                     .pa$antibody, format(.pa$total_umi, big.mark = ","),
+                     .pa$pct_of_adt_umi, .pa$pct_cells_detected)
+  .show <- head(.pa, 40)
+  print(
+    ggplot(.show, aes(reorder(antibody, total_umi), total_umi, fill = kind, text = tip)) +
+      geom_col(width = .7) +
+      scale_y_log10() +
+      scale_fill_manual(values = c(antibody = "#3f6fa8", `isotype control` = "#8a5a00"),
+                        name = NULL, drop = FALSE) +
+      coord_flip() +
+      labs(title = "Total counts per antibody",
+           subtitle = sprintf("%s%s; log scale", if (nrow(.pa) > 40) "top 40 of " else "",
+                              paste(nrow(.pa), "antibodies")),
+           x = NULL, y = "ADT UMIs (all cells)") +
+      theme_scratch())
+
+  .qa <- data.frame(rna = as.numeric(.rna_umi), adt = as.numeric(.adt_umi) + 1)
+  print(
+    ggplot(.qa, aes(rna, adt)) +
+      .binlayer() +
+      scale_x_log10() + scale_y_log10() +
+      scale_fill_gradient(low = "#dbe8fa", high = "#0d366b", trans = "log10", name = "cells") +
+      labs(title = "ADT counts vs RNA counts per cell",
+           subtitle = "log-log; ADT + 1 so cells with no ADT counts sit on the bottom edge",
+           x = "RNA UMIs per cell", y = "ADT UMIs per cell (+1)") +
+      theme_scratch())
+}
 ```
 
 ```{r compile_csv}

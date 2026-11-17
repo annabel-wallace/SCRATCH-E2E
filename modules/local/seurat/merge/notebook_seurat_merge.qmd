@@ -120,7 +120,7 @@ metadata <- readr::read_csv(file = input_exp_table)
 # only when a samplesheet was passed instead.
 metadata <- metadata %>%
   select(-dplyr::any_of(c("sampleIndex", "fastq_1", "fastq_2", "fastq_3",
-                          "modality", "run_id", "r1", "r2", "i1", "i2"))) %>%
+                          "modality", "gex_sample", "run_id", "r1", "r2", "i1", "i2"))) %>%
   distinct() %>%
   as.data.frame()
 
@@ -155,6 +155,7 @@ dir.create(bpcells_root, recursive = TRUE)
 # (which caused the 'vector::reserve' failure in JoinLayers at cohort scale).
 counts_list <- list()
 meta_list   <- list()
+adt_list    <- list()   # CITE-seq antibody counts, per sample that has them
 
 for (label in names(sample_label)) {
 
@@ -169,6 +170,9 @@ for (label in names(sample_label)) {
 
   counts_list[[label]] <- BPCells::open_matrix_dir(dir = mat_dir)
   meta_list[[label]]   <- obj@meta.data
+  # Small (tens to a few hundred antibodies), so it stays in memory.
+  if ("ADT" %in% SeuratObject::Assays(obj))
+    adt_list[[label]] <- SeuratObject::GetAssayData(obj, assay = 'ADT', layer = 'counts')
 
   rm(obj, counts); gc()
 }
@@ -209,6 +213,29 @@ seurat_object <- CreateSeuratObject(
   project   = project_name,
   meta.data = combined_meta
 )
+
+# CITE-seq: carry the ADT assay into the merged object. Only when EVERY sample
+# has one -- filling the GEX-only samples with zeros would read as "measured,
+# no protein". Antibodies are aligned to the panel all samples share, as genes
+# are above. A partial cohort keeps ADT in its per-sample QC objects and gets
+# the combined matrix as a separate file instead.
+if (length(adt_list)) {
+  .ab <- Reduce(intersect, lapply(adt_list, rownames))
+  .adt <- do.call(cbind, lapply(adt_list, function(m) m[.ab, , drop = FALSE]))
+  if (length(adt_list) == length(sample_label) && length(.ab)) {
+    seurat_object[["ADT"]] <- CreateAssayObject(
+      counts = .adt[, colnames(seurat_object), drop = FALSE])
+    DefaultAssay(seurat_object) <- "RNA"
+    message(sprintf("ADT assay: %d antibodies x %d cells (all %d samples)",
+                    length(.ab), ncol(seurat_object), length(adt_list)))
+  } else {
+    saveRDS(.adt, file = file.path('data', paste0(project_name, '_adt_counts_partial.RDS')))
+    message(sprintf(paste("ADT present in %d of %d samples: not added to the merged object;",
+                          "combined matrix (%d antibodies) saved as data/%s_adt_counts_partial.RDS"),
+                    length(adt_list), length(sample_label), length(.ab), project_name))
+  }
+  rm(.adt)
+}
 
 ```
 

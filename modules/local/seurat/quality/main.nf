@@ -19,6 +19,9 @@ process SEURAT_QUALITY {
         // figures were computed and then discarded. Optional: a sample that
         // fails QC early can legitimately produce none.
         path("figures/**"), emit: figures, optional: true
+        // CITE-seq only: per-antibody table and one-row library summary. A
+        // GEX-only library writes neither.
+        path("${sample_id}_adt_*.csv"), emit: adt, optional: true
 
     when:
         task.ext.when == null || task.ext.when

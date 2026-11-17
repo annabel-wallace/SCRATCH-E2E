@@ -21,6 +21,7 @@
 include { SAMPLESHEET_CHECK } from '../../modules/local/helper/validate/main.nf'
 include { AUTO_DEMUX        } from '../../modules/local/auto_demux/main.nf'
 include { CELLRANGER_COUNT  } from '../../modules/local/cellranger/count/main.nf'
+include { CELLRANGER_COUNT_CITE } from '../../modules/local/cellranger/count_cite/main.nf'
 include { CELLRANGER_VDJ    } from '../../modules/local/cellranger/vdj/main.nf'
 include { CELLRANGER_MULTI  } from '../../modules/local/cellranger/multi/main.nf'
 
@@ -189,16 +190,22 @@ workflow ALIGN {
                 // Inlined rather than a `def resolve = { }` closure: Nextflow
                 // 26.x's strict parser reports "`resolve` is not defined" for a
                 // closure variable referenced later in the same block.
+                //
+                // The 5th element is the GEX library an ADT (CITE-seq antibody)
+                // row belongs to: its `gex_sample` column when filled, else its
+                // own `sample`. Ignored for GEX and TCR rows.
                 .map { row ->
                     tuple(row.sample,
                           resolveSheetPath(row.fastq_1, sheetDir),
                           resolveSheetPath(row.fastq_2, sheetDir),
-                          row.modality)
+                          row.modality?.toString()?.trim()?.toUpperCase() in ['ADT', 'CITE'] ? 'ADT' : row.modality,
+                          row.gex_sample?.toString()?.trim() ?: row.sample)
                 }
 
             ch_branches = ch_rows.branch {
                 gex: it[3] == 'GEX'
                 tcr: it[3] == 'TCR'
+                adt: it[3] == 'ADT'
             }
 
             if (modality =~ /GEX/) {
@@ -213,13 +220,48 @@ workflow ALIGN {
                           "  Samplesheet: ${params.input_samplesheet}\n" +
                           "  Check its `modality` column, and which input files the run selected."
                 }
+                ch_gex_reads = ch_branches.gex
+                    .map { r -> tuple(r[0], r[1], r[2]) }
+                    .groupTuple(by: [0])
+                    .map { r -> tuple(r[0], r[1..2].flatten()) }
+
+                // CITE-seq: ADT rows grouped under the GEX library they belong
+                // to. A GEX library with ADT reads is counted by
+                // CELLRANGER_COUNT_CITE (both libraries, one run); every other
+                // GEX library goes to CELLRANGER_COUNT with exactly the inputs
+                // it had before, so its cached task is reused on resume.
+                ch_adt_reads = ch_branches.adt
+                    .map { r -> tuple(r[4], r[1], r[2]) }
+                    .groupTuple(by: [0])
+                    .map { r -> tuple(r[0], r[1..2].flatten()) }
+
+                ch_gex_split = ch_gex_reads
+                    .join(ch_adt_reads, remainder: true)
+                    .map { s, gex, adt ->
+                        if (gex == null)
+                            error "ADT (CITE-seq) row(s) point at GEX library '${s}', which is not " +
+                                  "in the samplesheet as a GEX row.\n" +
+                                  "  Give the ADT row the same `sample` as its GEX row, or name the " +
+                                  "GEX row in a `gex_sample` column."
+                        tuple(s, gex, adt)
+                    }
+                    .branch { r ->
+                        cite: r[2] != null
+                        plain: true
+                    }
+
+                def feature_ref = file(params.feature_reference ?: "${projectDir}/assets/NO_FILE_feature_ref",
+                                       checkIfExists: !(params.feature_reference?.toString() ==~ /^[a-z0-9+.-]+:\/\/.*/))
+
                 ch_gex_outs = CELLRANGER_COUNT(
-                    ch_branches.gex
-                        .map { r -> tuple(r[0], r[1], r[2]) }
-                        .groupTuple(by: [0])
-                        .map { r -> tuple(r[0], r[1..2].flatten()) },
+                    ch_gex_split.plain.map { s, gex, adt -> tuple(s, gex) },
                     params.genomes[genome].gex
                 ).outs
+                .mix(CELLRANGER_COUNT_CITE(
+                    ch_gex_split.cite,
+                    params.genomes[genome].gex,
+                    feature_ref
+                ).outs)
             }
 
             if (modality =~ /TCR/) {

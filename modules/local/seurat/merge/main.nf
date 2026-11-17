@@ -21,6 +21,9 @@ process SEURAT_MERGE {
         // On-disk BPCells counts store backing the object, so the next stage
         // can stage it at the same relative path.
         path("data/bpcells_counts"), emit: bpcells_store
+        // CITE-seq cohorts where only some samples have antibodies: the
+        // combined ADT matrix, kept out of the merged object (see notebook).
+        path("data/${params.project_name}_adt_counts_partial.RDS"), emit: adt_partial, optional: true
         path("report/${notebook_merge.baseName}.html")
 
     when:

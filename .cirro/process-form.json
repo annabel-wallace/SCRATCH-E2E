@@ -164,6 +164,12 @@
                             "demux"
                         ]
                     },
+                    "feature_reference": {
+                        "type": "string",
+                        "title": "CITE-seq antibody feature reference (CSV, optional)",
+                        "default": "",
+                        "description": "Only for CITE-seq FASTQs in standard alignment mode. s3:// path to the cellranger feature reference (id,name,read,pattern,sequence,feature_type = Antibody Capture). Give each antibody library the modality ADT in the dataset's sample metadata, and either the same sample name as its gene-expression library or a gex_sample column naming it. GEX and ADT are counted together; QC keeps the antibody counts as an ADT assay and reports them, but filters on RNA only. Blank = no CITE-seq."
+                    },
                     "tumor_type": {
                         "type": "string",
                         "title": "Tumour type",

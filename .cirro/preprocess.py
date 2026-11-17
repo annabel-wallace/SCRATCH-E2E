@@ -34,6 +34,7 @@ from cirro.helpers.preprocess_dataset import PreprocessDataset
 
 # Blank in a form field means "not supplied", not "supplied as empty".
 BLANK_MEANS_UNSET = [
+    "feature_reference",          # CITE-seq only; blank = no antibody library
     "input_seurat_object",
     "input_tumor_object",
     "input_nonmalignant_object",
@@ -566,7 +567,9 @@ def build_samplesheet(ds: PreprocessDataset) -> pd.DataFrame:
     version already known to work against a real Cirro FASTQ dataset.
     """
     REQUIRED = ["sample", "modality", "patient_id"]
-    OPTIONAL = ["timepoint", "batch"]
+    # gex_sample: on a CITE-seq antibody row (modality ADT), the gene-expression
+    # library it was captured with, when the two do not share a sample name.
+    OPTIONAL = ["timepoint", "batch", "gex_sample"]
 
     have_optional = [c for c in OPTIONAL if c in ds.samplesheet.columns]
     missing = [c for c in REQUIRED if c not in ds.samplesheet.columns]

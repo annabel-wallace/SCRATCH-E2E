@@ -29,6 +29,42 @@ S2,/data/S2_R1.fastq.gz,/data/S2_R2.fastq.gz,GEX
 T1,/data/T1_R1.fastq.gz,/data/T1_R2.fastq.gz,TCR
 ```
 
+**CITE-seq** (standard mode) — add the antibody library as a row with modality
+`ADT` and pass `--feature_reference` (cellranger's feature reference CSV:
+`id,name,read,pattern,sequence,feature_type`, with `Antibody Capture` rows). The
+ADT row pairs with its GEX row by the same `sample`, or by a `gex_sample` column
+when the names differ:
+
+```csv
+sample,fastq_1,fastq_2,modality,gex_sample
+S1,/data/S1_GEX_R1.fastq.gz,/data/S1_GEX_R2.fastq.gz,GEX,
+S1,/data/S1_ADT_R1.fastq.gz,/data/S1_ADT_R2.fastq.gz,ADT,
+S2,/data/S2_R1.fastq.gz,/data/S2_R2.fastq.gz,GEX,
+S2-CITE,/data/S2-CITE_R1.fastq.gz,/data/S2-CITE_R2.fastq.gz,ADT,S2
+```
+
+A GEX library with ADT rows is counted by `CELLRANGER_COUNT_CITE`
+(`cellranger count --libraries --feature-ref`); the others by `CELLRANGER_COUNT`
+exactly as before, so their cached tasks survive a resume. QC is unchanged for
+RNA and **filters on RNA only**; the antibody counts are kept as an `ADT` assay
+and reported:
+
+| Output (`qc/`) | What |
+|---|---|
+| `per_sample/<sample>_adt_summary.csv` | one row: antibodies, isotype controls, median ADT UMIs and antibodies per cell, cellranger's antibody metrics |
+| `per_sample/<sample>_adt_qc.csv` | one row per antibody: total UMIs, % of ADT counts, % of cells detected |
+| `per_sample/report/notebook_<sample>.html` | "Antibody (ADT) QC" section |
+| `per_sample/objects/<sample>_seurat_object.RDS` | RNA + ADT assays |
+| `data/<project>_qc_merged_object.RDS`, `data/<project>_qc_dbl_singlet_object.RDS` | RNA + ADT, **only when every sample has ADT** |
+| `data/<project>_adt_counts_partial.RDS` | the combined ADT matrix when only some samples have it |
+
+For a CITE-seq-only run use `--to qc`. Stages after QC rebuild the object from
+the RNA counts and do not carry ADT. CITE-seq is tested in standard mode only;
+with `--multi` the antibody library would go in the cellranger multi config,
+which has not been tested with antibodies. On Cirro: set the antibody
+samples' modality to `ADT` (plus `gex_sample` if the names differ) and fill
+"CITE-seq antibody feature reference".
+
 **Demux** (`--demux true`) — pooled FASTQs, barcodes auto-detected from I1:
 
 ```csv

@@ -134,6 +134,13 @@ seurat_object <- CreateSeuratObject(
   meta.data = keep_meta
 )
 
+# CITE-seq: the rebuild above keeps only RNA. The ADT assay is in memory in the
+# RDS (not in the BPCells store), so take it from the loaded object.
+if ("ADT" %in% SeuratObject::Assays(loaded_object)) {
+  seurat_object[["ADT"]] <- subset(loaded_object[["ADT"]], cells = colnames(seurat_object))
+  DefaultAssay(seurat_object) <- "RNA"
+}
+
 rm(loaded_object); gc()
 
 # Setting random seed
@@ -477,11 +484,19 @@ keep_meta <- singlet_object@meta.data
 keep_meta <- keep_meta[, setdiff(colnames(keep_meta),
                                  c('nCount_RNA', 'nFeature_RNA')), drop = FALSE]
 
+.adt_singlet <- if ("ADT" %in% SeuratObject::Assays(singlet_object)) singlet_object[["ADT"]] else NULL
+
 singlet_object <- CreateSeuratObject(
   counts    = singlet_counts,
   project   = project_name,
   meta.data = keep_meta
 )
+
+if (!is.null(.adt_singlet)) {
+  singlet_object[["ADT"]] <- subset(.adt_singlet, cells = colnames(singlet_object))
+  DefaultAssay(singlet_object) <- "RNA"
+  rm(.adt_singlet)
+}
 
 ```
 
