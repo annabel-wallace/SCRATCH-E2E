@@ -36,6 +36,12 @@ params:
   n_threads: 8
   # 0 = no cap. See --cnv_infercnv_max_cells_per_group.
   max_cells_per_group: 0
+  # Above this many cells inferCNV's own heatmaps are switched off (no_plot) and
+  # the report draws a binned heatmap of every cell instead. Its heatmap.cnv
+  # overflows on very large inputs: 139k cells (GBM DFCI1 + DFCI7) died in
+  # plot_subclusters -> rasterImage with "cannot allocate memory block of size
+  # 16777216 Tb" after the CNV model itself had finished, three times.
+  native_plot_max_cells: 50000
   n_memory: 16
   work_directory: !expr here::here()
   auto_save: true
@@ -73,6 +79,8 @@ thr_cluster_size <- params$thr_cluster_size
 # Dataflow/Computational parameters
 n_threads <- params$n_threads
 max_cells_per_group <- suppressWarnings(as.integer(params$max_cells_per_group))
+native_plot_max_cells <- suppressWarnings(as.integer(params$native_plot_max_cells))
+if (is.na(native_plot_max_cells)) native_plot_max_cells <- 50000L
 n_memory <- params$n_memory
 
 # Output parameters
@@ -364,8 +372,19 @@ infercnv_object <- infercnv::CreateInfercnvObject(
 #
 # Restore inferCNV's upstream default with -P bayes_max_p_normal:0.5 once the
 # image carries a version where the MCMC step tolerates an empty group.
+# no_plot writes every non-image output (HMM calls, region tables, the
+# observation/reference matrices add_to_seurat reads) and skips only the PNGs.
+# NOT the subcluster plot: in infercnv 1.23.0 plot_subclusters() -- the call
+# that overflowed on Cirro -- is gated by inspect_subclusters alone, so that is
+# switched off with it.
+infercnv_no_plot <- ncol(infercnv_object@expr.data) > native_plot_max_cells
+if (infercnv_no_plot)
+  message(sprintf("%d cells > native_plot_max_cells (%d): inferCNV's own heatmaps off; the report draws a binned heatmap of all cells.",
+                  ncol(infercnv_object@expr.data), native_plot_max_cells))
 infercnv_object <- infercnv::run(
           infercnv_object,
+          no_plot = infercnv_no_plot,
+          inspect_subclusters = !infercnv_no_plot,
           cutoff = 0.25,
           out_dir='./data/infercnv',
           cluster_by_groups = TRUE,
@@ -424,6 +443,61 @@ of a chromosome arm and is shared by many cells; thin, scattered stripes are noi
                                           pattern = "^infercnv\\.17_HMM_pred.*\\.png$")[1],
   "Preliminary heatmap (before denoising)" = "infercnv.preliminary.png")
 dir.create("figures", showWarnings = FALSE)
+if (isTRUE(infercnv_no_plot)) {
+  # inferCNV's own heatmaps were off (too many cells for heatmap.cnv). Same
+  # picture from the final (denoised) matrix: rows are cells, references first
+  # then observations, grouped by cell type and never mixed across groups;
+  # columns are genes in genome order. EVERY cell is in it -- consecutive cells
+  # within a group are averaged into one pixel row (about n / 3000 per row), not
+  # sampled. Colour: expression relative to the reference, centred at 1.
+  .x   <- infercnv_object@expr.data
+  .go  <- infercnv_object@gene_order[rownames(.x), , drop = FALSE]
+  .grp <- c(lapply(infercnv_object@reference_grouped_cell_indices, function(i) list(i = i, ref = TRUE)),
+            lapply(infercnv_object@observation_grouped_cell_indices, function(i) list(i = i, ref = FALSE)))
+  .grp <- .grp[vapply(.grp, function(g) length(g$i) > 0, logical(1))]
+  .n   <- sum(vapply(.grp, function(g) length(g$i), integer(1)))
+  .per <- max(1L, ceiling(.n / 3000))
+  .rows <- list(); .lab <- character(0); .isref <- logical(0)
+  for (g in names(.grp)) {
+    idx <- .grp[[g]]$i
+    # Within a group keep inferCNV's subcluster order where it exists.
+    sc <- infercnv_object@tumor_subclusters$hc[[g]]
+    if (!is.null(sc) && length(sc$order) == length(idx)) idx <- idx[sc$order]
+    for (b in split(idx, ceiling(seq_along(idx) / .per))) {
+      .rows[[length(.rows) + 1L]] <- Matrix::rowMeans(.x[, b, drop = FALSE])
+      .lab <- c(.lab, g); .isref <- c(.isref, .grp[[g]]$ref)
+    }
+  }
+  .m <- do.call(cbind, .rows)                 # genes x pixel rows
+  .lim <- stats::quantile(abs(.m - 1), 0.995, na.rm = TRUE)
+  .m <- pmin(pmax(.m, 1 - .lim), 1 + .lim)
+  .chr <- as.character(.go$chr)
+  dir.create("figures", showWarnings = FALSE)
+  .png <- file.path("figures", "infercnv_heatmap_all_cells.png")
+  png(.png, width = 4000, height = 3000, res = 300, bg = "white")
+  layout(matrix(1:2, 1), widths = c(1, 12))
+  par(mar = c(3, 0.5, 3, 0))
+  .gcol <- grDevices::hcl.colors(length(unique(.lab)), "Dark 3")[match(.lab, unique(.lab))]
+  image(1, seq_along(.lab), matrix(seq_along(.lab), 1), col = .gcol, axes = FALSE, xlab = "", ylab = "")
+  par(mar = c(3, 0.5, 3, 1))
+  image(seq_len(nrow(.m)), seq_len(ncol(.m)), .m, useRaster = TRUE, axes = FALSE, xlab = "", ylab = "",
+        col = grDevices::colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(101),
+        zlim = c(1 - .lim, 1 + .lim),
+        main = sprintf("inferCNV, all %s cells (%d per row; references below the line)",
+                       format(.n, big.mark = ","), .per))
+  .brk <- which(.chr[-1] != .chr[-length(.chr)])
+  abline(v = .brk + 0.5, col = "grey40", lwd = 0.4)
+  abline(h = sum(.isref) + 0.5, col = "black", lwd = 1)
+  .mid <- tapply(seq_along(.chr), factor(.chr, levels = unique(.chr)), mean)
+  axis(1, at = .mid, labels = names(.mid), tick = FALSE, cex.axis = 0.5, line = -0.8)
+  dev.off()
+  rm(.x, .m, .rows); gc()
+  cat(sprintf(paste0("\n\n*inferCNV's own heatmaps were switched off for %s cells (above %s); ",
+                     "the heatmap below is drawn from its final matrix with every cell included.*\n\n"),
+              format(.n, big.mark = ","), format(native_plot_max_cells, big.mark = ",")))
+  cat(sprintf("\n\n#### Final inferCNV heatmap (all cells, binned)\n\n![](%s){width=100%%}\n\n", .png))
+  .hm <- character(0)
+}
 for (nm in names(.hm)) {
   f <- .hm[[nm]]
   src <- if (!is.na(f)) file.path("data/infercnv", f) else NA_character_
