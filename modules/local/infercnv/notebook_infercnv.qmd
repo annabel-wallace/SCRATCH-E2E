@@ -475,10 +475,17 @@ if (isTRUE(infercnv_no_plot)) {
   dir.create("figures", showWarnings = FALSE)
   .png <- file.path("figures", "infercnv_heatmap_all_cells.png")
   png(.png, width = 4000, height = 3000, res = 300, bg = "white")
-  layout(matrix(1:2, 1), widths = c(1, 12))
-  par(mar = c(3, 0.5, 3, 0))
-  .gcol <- grDevices::hcl.colors(length(unique(.lab)), "Dark 3")[match(.lab, unique(.lab))]
-  image(1, seq_along(.lab), matrix(seq_along(.lab), 1), col = .gcol, axes = FALSE, xlab = "", ylab = "")
+  layout(matrix(1:2, 1), widths = c(2.6, 12))
+  par(mar = c(3, 9, 3, 0))
+  .ug <- unique(.lab)
+  .gid <- match(.lab, .ug)
+  image(1, seq_along(.lab), matrix(.gid, 1), col = grDevices::hcl.colors(length(.ug), "Dark 3"),
+        axes = FALSE, xlab = "", ylab = "")
+  # Name each block where it sits (a group is a contiguous run of rows).
+  .r <- rle(.lab); .end <- cumsum(.r$lengths); .mid <- .end - .r$lengths / 2 + 0.5
+  axis(2, at = .mid, labels = sprintf("%s%s", .r$values,
+                                      ifelse(.isref[.end], " (ref)", "")),
+       las = 1, tick = FALSE, cex.axis = 0.55, line = -0.6)
   par(mar = c(3, 0.5, 3, 1))
   image(seq_len(nrow(.m)), seq_len(ncol(.m)), .m, useRaster = TRUE, axes = FALSE, xlab = "", ylab = "",
         col = grDevices::colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(101),
