@@ -9,47 +9,14 @@
                 "type": "object",
                 "description": "The pipeline is one process. Pick where to start and where to stop; everything between runs in order, with the malignant and non-malignant arms fanning out after stratification.",
                 "properties": {
-                    "from": {
+                    "data_type": {
                         "type": "string",
-                        "title": "Start at",
-                        "default": "qc",
-                        "description": "align needs FASTQs and a ~15 GB cellranger reference. Starting anywhere after qc requires the matching input object below.",
+                        "title": "Data type",
+                        "default": "Gene expression (scRNA-seq)",
+                        "description": "CITE-seq (RNA + antibody libraries) runs alignment and QC only: the stages after QC rebuild the object from RNA and drop the antibody counts. The result is one RDS with every sample, RNA and ADT assays, after QC and doublet removal.",
                         "enum": [
-                            "align",
-                            "qc",
-                            "cluster",
-                            "annotation",
-                            "cnv",
-                            "stratify",
-                            "metaprog",
-                            "batchcorrect",
-                            "trajectory",
-                            "cellcomm",
-                            "tme",
-                            "tcr",
-                            "integration"
-                        ]
-                    },
-                    "to": {
-                        "type": "string",
-                        "title": "Stop after",
-                        "default": "end",
-                        "description": "'end' runs through to the integration layer and the master report. 'align' stops after cellranger, which is the only range that works for a TCR-only run \u2014 QC and everything after it need gene expression.",
-                        "enum": [
-                            "end",
-                            "align",
-                            "qc",
-                            "cluster",
-                            "annotation",
-                            "cnv",
-                            "stratify",
-                            "metaprog",
-                            "batchcorrect",
-                            "trajectory",
-                            "cellcomm",
-                            "tme",
-                            "tcr",
-                            "integration"
+                            "Gene expression (scRNA-seq)",
+                            "CITE-seq (RNA + antibodies)"
                         ]
                     },
                     "tcr_analysis": {
@@ -68,6 +35,101 @@
                         "title": "Project name",
                         "default": "scratch",
                         "description": "Prefixes every output object and report, e.g. <project>_qc_dbl_singlet_object.RDS."
+                    }
+                },
+                "dependencies": {
+                    "data_type": {
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "data_type": {
+                                        "enum": [
+                                            "Gene expression (scRNA-seq)"
+                                        ]
+                                    },
+                                    "from": {
+                                        "type": "string",
+                                        "title": "Start at",
+                                        "default": "qc",
+                                        "description": "align needs FASTQs and a ~15 GB cellranger reference. Starting anywhere after qc requires the matching input object below.",
+                                        "enum": [
+                                            "align",
+                                            "qc",
+                                            "cluster",
+                                            "annotation",
+                                            "cnv",
+                                            "stratify",
+                                            "metaprog",
+                                            "batchcorrect",
+                                            "trajectory",
+                                            "cellcomm",
+                                            "tme",
+                                            "tcr",
+                                            "integration"
+                                        ]
+                                    },
+                                    "to": {
+                                        "type": "string",
+                                        "title": "Stop after",
+                                        "default": "end",
+                                        "description": "'end' runs through to the integration layer and the master report. 'align' stops after cellranger, which is the only range that works for a TCR-only run \u2014 QC and everything after it need gene expression.",
+                                        "enum": [
+                                            "end",
+                                            "align",
+                                            "qc",
+                                            "cluster",
+                                            "annotation",
+                                            "cnv",
+                                            "stratify",
+                                            "metaprog",
+                                            "batchcorrect",
+                                            "trajectory",
+                                            "cellcomm",
+                                            "tme",
+                                            "tcr",
+                                            "integration"
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "properties": {
+                                    "data_type": {
+                                        "enum": [
+                                            "CITE-seq (RNA + antibodies)"
+                                        ]
+                                    },
+                                    "from": {
+                                        "type": "string",
+                                        "title": "Start at",
+                                        "default": "align",
+                                        "description": "CITE-seq starts from FASTQs: the gene-expression and antibody libraries are counted together by cellranger.",
+                                        "enum": [
+                                            "align"
+                                        ]
+                                    },
+                                    "to": {
+                                        "type": "string",
+                                        "title": "Stop after",
+                                        "default": "qc",
+                                        "description": "qc = counts, per-sample QC with antibody (ADT) QC, merge and doublet removal. align = counts only.",
+                                        "enum": [
+                                            "qc",
+                                            "align"
+                                        ]
+                                    },
+                                    "feature_reference": {
+                                        "type": "string",
+                                        "title": "Antibody feature reference (CSV)",
+                                        "default": "",
+                                        "description": "s3:// path to the cellranger feature reference: id,name,read,pattern,sequence,feature_type (Antibody Capture rows). Give each antibody library the modality ADT in the dataset's sample metadata, and either the same sample name as its gene-expression library or a gex_sample column naming it. QC filters on RNA only; the antibody counts are kept as the ADT assay."
+                                    }
+                                },
+                                "required": [
+                                    "feature_reference"
+                                ]
+                            }
+                        ]
                     }
                 }
             },
@@ -163,12 +225,6 @@
                             "multi",
                             "demux"
                         ]
-                    },
-                    "feature_reference": {
-                        "type": "string",
-                        "title": "CITE-seq antibody feature reference (CSV, optional)",
-                        "default": "",
-                        "description": "Only for CITE-seq FASTQs in standard alignment mode. s3:// path to the cellranger feature reference (id,name,read,pattern,sequence,feature_type = Antibody Capture). Give each antibody library the modality ADT in the dataset's sample metadata, and either the same sample name as its gene-expression library or a gex_sample column naming it. GEX and ADT are counted together; QC keeps the antibody counts as an ADT assay and reports them, but filters on RNA only. Blank = no CITE-seq."
                     },
                     "tumor_type": {
                         "type": "string",

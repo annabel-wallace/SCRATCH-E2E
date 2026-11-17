@@ -62,8 +62,13 @@ For a CITE-seq-only run use `--to qc`. Stages after QC rebuild the object from
 the RNA counts and do not carry ADT. CITE-seq is tested in standard mode only;
 with `--multi` the antibody library would go in the cellranger multi config,
 which has not been tested with antibodies. On Cirro: set the antibody
-samples' modality to `ADT` (plus `gex_sample` if the names differ) and fill
-"CITE-seq antibody feature reference".
+samples' modality to `ADT` (plus `gex_sample` if the names differ), choose
+**Data type = CITE-seq** under "Stages to run" and fill "Antibody feature
+reference". For CITE-seq the form offers only Start at `align` and Stop after
+`qc` (or `align`), and `.cirro/preprocess.py` enforces the same range for any
+launch that bypasses the form; it also refuses a CITE-seq launch with no
+reference or no ADT sample, and a gene-expression launch that includes ADT
+samples.
 
 **Demux** (`--demux true`) — pooled FASTQs, barcodes auto-detected from I1:
 

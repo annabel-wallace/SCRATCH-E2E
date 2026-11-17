@@ -630,7 +630,70 @@ def build_samplesheet(ds: PreprocessDataset) -> pd.DataFrame:
     return table
 
 
+CITE_LABELS = ("cite", "cite-seq", "citeseq")
+ADT_MODALITIES = ("adt", "cite")
+
+
+def apply_data_type(ds: PreprocessDataset) -> bool:
+    """CITE-seq runs alignment and QC only. Returns True for a CITE-seq launch.
+
+    The form offers only align -> qc for CITE-seq; this enforces the same rule
+    for any launch that bypasses it (a stale form, "Copy parameters"), because
+    the stages after QC rebuild the object from RNA and drop the antibodies.
+      - from = align, to = qc (to = align is allowed: counts only)
+      - standard alignment mode, modality GEX
+      - a feature reference is required, and at least one sample must have
+        modality ADT; a GEX launch with ADT samples is refused rather than
+        letting cellranger fail on the missing reference later.
+    """
+    raw = str(ds.params.get("data_type", "gex")).strip().lower()
+    if "data_type" in ds.params:
+        ds.remove_param("data_type")            # not a pipeline parameter
+    is_cite = any(k in raw for k in CITE_LABELS)
+
+    mod = ds.samplesheet["modality"].astype(str).str.strip().str.lower() \
+        if "modality" in ds.samplesheet.columns else None
+    adt_samples = sorted(ds.samplesheet.loc[mod.isin(ADT_MODALITIES), "sample"].astype(str)) \
+        if mod is not None else []
+
+    if not is_cite:
+        if adt_samples and str(ds.params.get("from", "align")).lower() == "align":
+            raise ValueError(
+                "Data type is gene expression, but these samples have modality ADT (antibody "
+                f"libraries): {', '.join(adt_samples)}. Choose Data type 'CITE-seq' and give the "
+                "antibody feature reference, or remove those samples from the selection.")
+        return False
+
+    ds.logger.info("Data type: CITE-seq -> alignment and QC only.")
+    if str(ds.params.get("from", "align")).lower() != "align":
+        ds.logger.info(f"  Start at '{ds.params.get('from')}' replaced by 'align' (CITE-seq starts from FASTQs).")
+    ds.add_param("from", "align", overwrite=True)
+    to = str(ds.params.get("to", "qc")).lower()
+    if to not in ("align", "qc"):
+        ds.logger.info(f"  Stop after '{to}' replaced by 'qc': stages after QC do not carry the antibody counts.")
+        to = "qc"
+    ds.add_param("to", to, overwrite=True)
+
+    mode = str(ds.params.get("alignment_mode", "standard")).lower()
+    if mode != "standard":
+        raise ValueError(f"CITE-seq is supported in standard alignment mode only (got '{mode}').")
+    if str(ds.params.get("modality", "GEX")).upper() != "GEX":
+        ds.logger.info(f"  Modality '{ds.params.get('modality')}' replaced by 'GEX' (antibody libraries come from the ADT samples).")
+        ds.add_param("modality", "GEX", overwrite=True)
+    if not str(ds.params.get("feature_reference", "") or "").strip():
+        raise ValueError("CITE-seq needs the antibody feature reference CSV "
+                         "(id,name,read,pattern,sequence,feature_type = Antibody Capture).")
+    if not adt_samples:
+        raise ValueError(
+            "Data type is CITE-seq, but no selected sample has modality ADT. Set the antibody "
+            "libraries' modality to ADT in the dataset's sample metadata (and gex_sample if their "
+            "names differ from the gene-expression libraries).")
+    ds.logger.info(f"  antibody (ADT) samples: {', '.join(adt_samples)}")
+    return True
+
+
 def setup_parameters(ds: PreprocessDataset):
+    apply_data_type(ds)
     start = str(ds.params.get("from", "align")).lower()
 
     # ---- alignment ------------------------------------------------------

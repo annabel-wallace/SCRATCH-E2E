@@ -35,7 +35,7 @@
     "project_name": "$.params.dataset.paramJson.stage_range.project_name",
     "tcr_analysis": "$.params.dataset.paramJson.stage_range.tcr_analysis",
     "alignment_mode": "$.params.dataset.paramJson.reference.alignment_mode",
-    "feature_reference": "$.params.dataset.paramJson.reference.feature_reference",
+    "feature_reference": "$.params.dataset.paramJson.stage_range.feature_reference",
     "input_bam_path": "$.params.dataset.paramJson.entry_point.input_bam_path",
     "input_vdj_contigs": "$.params.dataset.paramJson.entry_point.input_vdj_contigs",
     "exp_table_override": "$.params.dataset.paramJson.entry_point.input_exp_table",
@@ -44,5 +44,6 @@
     "annot_db": "$.params.dataset.paramJson.reference.annot_db",
     "annot_primary": "$.params.dataset.paramJson.reference.annot_primary",
     "annot_state_exclude": "$.params.dataset.paramJson.reference.annot_state_exclude",
-    "annot_celltypist_model": "$.params.dataset.paramJson.downstream.annot_celltypist_model"
+    "annot_celltypist_model": "$.params.dataset.paramJson.downstream.annot_celltypist_model",
+    "data_type": "$.params.dataset.paramJson.stage_range.data_type"
 }
