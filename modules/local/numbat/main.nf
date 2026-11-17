@@ -492,6 +492,12 @@ process NUMBAT_RUN {
         export NUMBAT_GENOME=${params.numbat_genome}
         export OMP_NUM_THREADS=${task.cpus}
         export OPENBLAS_NUM_THREADS=${task.cpus}
+        # Scaling (see bin/numbat_run.R): how the initial tree's distances are
+        # computed, and UPGMA-only phylogeny seeding above a cell count.
+        export NUMBAT_INIT_DIST=${params.numbat_init_dist}
+        export NUMBAT_INIT_PCS=${params.numbat_init_pcs}
+        export NUMBAT_SKIP_NJ=${params.numbat_skip_nj}
+        export NUMBAT_NJ_MAX_CELLS=${params.numbat_nj_max_cells}
 
         # Echo the parameters BEFORE running. bin/ IS hashed per referenced
         # script -- editing bin/numbat_run.R does re-run this task, measured on
@@ -499,7 +505,7 @@ process NUMBAT_RUN {
         # anywhere, and an earlier 3-hour run reported a result for a threshold
         # it never used. This line puts the values in .command.log within
         # seconds of the task starting.
-        echo "[numbat] group=${group_id} libraries=${alleleList.size()} min_LLR=${params.numbat_min_llr} max_entropy=${params.numbat_max_entropy} min_cells=${params.numbat_min_cells} t=${params.numbat_t} max_iter=${params.numbat_max_iter}"
+        echo "[numbat] group=${group_id} libraries=${alleleList.size()} min_LLR=${params.numbat_min_llr} max_entropy=${params.numbat_max_entropy} min_cells=${params.numbat_min_cells} t=${params.numbat_t} max_iter=${params.numbat_max_iter} init_dist=${params.numbat_init_dist} skip_nj=${params.numbat_skip_nj} cpus=${task.cpus}"
 
         numbat_run.R \\
             ${counts} ${cellmap} ${refcells} \\

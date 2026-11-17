@@ -222,6 +222,165 @@ message(sprintf("[%s] expression reference: %s (%d genes x %d profile(s): %s)",
 out_sub <- file.path(outdir, group_id)
 dir.create(out_sub, recursive = TRUE, showWarnings = FALSE)
 
+# ---------------------------------------------------------------------------
+# Scaling to large individuals (set by NUMBAT_RUN through the environment, so
+# the positional arguments above are untouched).
+#
+# Numbat's initial clustering (numbat:::exp_hclust) smooths every cell's
+# expression along the genome, takes Euclidean distances between EVERY pair of
+# cells with parallelDist (one pair at a time over all genes), then builds a
+# Ward tree. On DFCI1 that was 6 h 25 m of an 8 h run at 35k cells, ~30 h at
+# 60k. The tree only seeds Numbat (cutree at init_k = 3).
+#
+# NUMBAT_INIT_DIST:
+#   exact  (default) the SAME Euclidean distances, computed as
+#          ||x||^2 + ||y||^2 - 2 x.y with blocked matrix multiplication (BLAS,
+#          all task CPUs) and written straight into a 'dist' object. Same
+#          numbers to floating-point rounding, so the same tree; verified
+#          against Numbat's own hc.rds on DFCI1 (see gram_dist).
+#   pca    distances on the top NUMBAT_INIT_PCS principal components
+#          (randomized SVD). Faster again, but NOT the same tree: on DFCI1 it
+#          moved 3-5% of cells between the init_k = 3 starting groups (30-200
+#          PCs). For individuals too large for exact (dist memory is cells^2 x
+#          4 bytes; Ward holds about two copies).
+#   numbat Numbat's own function, unchanged.
+#
+# NUMBAT_SKIP_NJ (auto | true | false), NUMBAT_NJ_MAX_CELLS: after calling
+#   cells Numbat builds a UPGMA tree AND a neighbour-joining tree over every
+#   cell and seeds NNI with the better one. ape::nj is O(cells^3); UPGMA is
+#   O(cells^2). auto skips NJ above NUMBAT_NJ_MAX_CELLS cells; NNI still refines
+#   the UPGMA seed (run_numbat's own skip_nj).
+# ---------------------------------------------------------------------------
+gram_dist <- function(X, block = 1024L) {
+  # Exact Euclidean distances between the ROWS of X as a 'dist' object.
+  # G = X %*% t(X[I, ]) per block of rows I (n x |I|, contiguous per column);
+  # column i of the dist vector holds rows i+1..n, starting at
+  # n*(i-1) - i*(i-1)/2 + 1. Memory: the dist vector plus one n x block block.
+  n <- nrow(X)
+  sq <- numeric(n)
+  for (b in split(seq_len(n), ceiling(seq_len(n) / 5000))) sq[b] <- rowSums(X[b, , drop = FALSE]^2)
+  out <- numeric(n * (n - 1) / 2)
+  for (i0 in seq(1L, n - 1L, by = block)) {
+    I <- i0:min(i0 + block - 1L, n - 1L)
+    G <- tcrossprod(X, X[I, , drop = FALSE])
+    for (r in seq_along(I)) {
+      i <- I[r]; jj <- (i + 1L):n
+      st <- n * (i - 1) - i * (i - 1) / 2
+      out[(st + 1):(st + n - i)] <- sqrt(pmax(sq[i] + sq[jj] - 2 * G[jj, r], 0))
+    }
+  }
+  structure(out, Size = n, Labels = rownames(X), Diag = FALSE, Upper = FALSE,
+            method = "euclidean", class = "dist", call = quote(gram_dist(X)))
+}
+# ---- end gram_dist
+
+# R's stats::hclust refuses more than 65,536 observations ("size cannot be NA
+# nor exceed 65536"). Numbat builds trees over CELLS twice -- the initial Ward
+# tree (exp_hclust) and the UPGMA phylogeny seed (numbat:::upgma) -- so an
+# individual above 65,536 cells cannot finish. GBM DFCI7 (79,687 cells) failed
+# exactly there, after ~40 h of distance computation. fastcluster::hclust is the
+# drop-in replacement: identical merges and heights to stats::hclust (ward.D2
+# and average checked, heights within 1e-14) and no size limit (70k cells in
+# 3.8 min, emulated). It is in the Numbat image from tag procps-fastcluster.
+has_fastcluster <- requireNamespace("fastcluster", quietly = TRUE)
+hclust_fun <- if (has_fastcluster) fastcluster::hclust else stats::hclust
+if (ncol(count_mat) > 65536L && !has_fastcluster)
+  stop(sprintf(paste(
+    "[%s] %d cells: above stats::hclust's 65,536-observation limit, and the",
+    "fastcluster package is not in this image. Numbat would fail at its first tree",
+    "after computing every pairwise distance. Use the procps-fastcluster Numbat image."),
+    group_id, ncol(count_mat)))
+if (has_fastcluster) {
+  .upgma <- function(D, method = "average", ...) {
+    # numbat:::upgma (1.4.2) verbatim, with the unlimited hclust.
+    DD <- as.dist(D)
+    hc <- hclust_fun(DD, method = method, ...)
+    result <- ape::as.phylo(hc)
+    result <- reorder(result, "postorder")
+    result
+  }
+  .uenv <- new.env(parent = asNamespace("numbat")); .uenv$hclust_fun <- hclust_fun
+  environment(.upgma) <- .uenv
+  utils::assignInNamespace("upgma", .upgma, ns = "numbat")
+}
+
+init_dist <- tolower(Sys.getenv("NUMBAT_INIT_DIST", "numbat"))
+init_pcs  <- suppressWarnings(as.integer(Sys.getenv("NUMBAT_INIT_PCS", "50")))
+# Numbat's own exp_hclust calls stats::hclust, so above the limit it cannot be
+# used even when asked for; the exact path computes the same distances.
+if (init_dist == "numbat" && ncol(count_mat) > 65536L) {
+  message(sprintf("[%s] %d cells > 65,536: Numbat's own initial clustering cannot run; using 'exact' (same distances).",
+                  group_id, ncol(count_mat)))
+  init_dist <- "exact"
+}
+if (init_dist %in% c("exact", "pca")) {
+  .env <- new.env(parent = asNamespace("numbat"))
+  .env$init_dist <- init_dist; .env$init_pcs <- init_pcs; .env$gram_dist <- gram_dist
+  .env$hclust_fun <- hclust_fun
+  fast_exp_hclust <- function(count_mat, lambdas_ref, gtf, sc_refs = NULL, window = 101,
+                              ncores = 1, verbose = TRUE) {
+    # Same first three steps as numbat:::exp_hclust (1.4.2), verbatim.
+    count_mat <- check_matrix(count_mat)
+    if (is.null(sc_refs)) sc_refs <- choose_ref_cor(count_mat, lambdas_ref, gtf)
+    lambdas_bar <- get_lambdas_bar(lambdas_ref, sc_refs, verbose = FALSE)
+    gexp_roll_wide <- t(smooth_expression(count_mat, lambdas_bar, gtf,
+                                          window = window, verbose = verbose))
+    X <- gexp_roll_wide
+    # parDist propagates an NA into the distance and exp_hclust then sets that
+    # distance to 0; both fast paths need finite input, so say so and use 0.
+    if (anyNA(X)) { log_warn("NAs in smoothed expression, set to 0 before the distances."); X[is.na(X)] <- 0 }
+    if (init_dist == "pca") {
+      k <- min(init_pcs, ncol(X), nrow(X) - 1L)
+      # Top-k PCs by randomized SVD (Halko, Martinsson & Tropp 2011; 10
+      # oversampling columns, 2 power iterations), centring applied implicitly
+      # so the dense matrix is never copied. irlba/RSpectra are not in the
+      # Numbat image. Seeded, so a rerun gives the same tree.
+      mu <- colMeans(X); n <- nrow(X); l <- min(k + 10L, ncol(X))
+      xc_mul  <- function(M) X %*% M - matrix(drop(crossprod(mu, M)), n, ncol(M), byrow = TRUE)
+      xct_mul <- function(Q) crossprod(X, Q) - tcrossprod(mu, colSums(Q))
+      set.seed(20261117)
+      Q <- qr.Q(qr(xc_mul(matrix(stats::rnorm(ncol(X) * l), ncol(X), l))))
+      for (it in 1:2) { Q <- qr.Q(qr(xct_mul(Q))); Q <- qr.Q(qr(xc_mul(Q))) }
+      sv <- svd(t(xct_mul(Q)), nu = 0, nv = k)
+      V  <- sv$v[, seq_len(k), drop = FALSE]
+      ss <- 0
+      for (b in split(seq_len(n), ceiling(seq_len(n) / 5000))) ss <- ss + sum(X[b, , drop = FALSE]^2)
+      kept <- 100 * sum(sv$d[seq_len(k)]^2) / (ss - n * sum(mu^2))
+      # Distances are translation-invariant, so the projection needs no centring.
+      X <- X %*% V; rownames(X) <- rownames(gexp_roll_wide)
+      log_message(sprintf("initial distances on %d principal components (%.1f%% of smoothed-expression variance)",
+                          k, kept), verbose = verbose)
+    } else {
+      log_message(sprintf("initial distances: exact Euclidean by blocked BLAS (%d cells x %d genes)",
+                          nrow(X), ncol(X)), verbose = verbose)
+    }
+    dist_mat <- gram_dist(X); rm(X); gc()
+    log_message("running hclust...")
+    hc <- hclust_fun(dist_mat, method = "ward.D2")
+    list(gexp_roll_wide = gexp_roll_wide, hc = hc)
+  }
+  environment(fast_exp_hclust) <- .env
+  utils::assignInNamespace("exp_hclust", fast_exp_hclust, ns = "numbat")
+}
+message(sprintf("[%s] tree building: %s", group_id,
+                if (has_fastcluster) "fastcluster::hclust (no cell limit; same result as stats::hclust)"
+                else "stats::hclust (limit 65,536 cells)"))
+message(sprintf("[%s] initial clustering distances: %s (%d cells)", group_id,
+                switch(init_dist, exact = "exact, blocked BLAS",
+                       pca = sprintf("top %d principal components", init_pcs),
+                       "Numbat's own parallelDist"), ncol(count_mat)))
+
+skip_nj_mode <- tolower(Sys.getenv("NUMBAT_SKIP_NJ", "false"))
+nj_max_cells <- suppressWarnings(as.integer(Sys.getenv("NUMBAT_NJ_MAX_CELLS", "10000")))
+skip_nj <- switch(skip_nj_mode,
+  "true" = TRUE, "yes" = TRUE, "1" = TRUE,
+  "auto" = ncol(count_mat) > nj_max_cells,
+  FALSE)
+message(sprintf("[%s] phylogeny seed: %s", group_id,
+                if (skip_nj) sprintf("UPGMA only (skip_nj; %d cells%s)", ncol(count_mat),
+                                     if (skip_nj_mode == "auto") sprintf(" > %d", nj_max_cells) else "")
+                else "better of UPGMA and neighbour-joining"))
+
 res <- try(
   numbat::run_numbat(
     count_mat = count_mat,
@@ -233,6 +392,7 @@ res <- try(
     max_iter = max_iter,
     min_LLR = min_llr,
     max_entropy = max_entropy,
+    skip_nj = skip_nj,
     plot = FALSE,
     out_dir = out_sub
   ),

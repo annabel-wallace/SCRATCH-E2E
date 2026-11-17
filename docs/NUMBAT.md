@@ -403,6 +403,10 @@ HRS371755, 92–93% of target sites came out phased (chr1, chr22).
 | `--numbat_germline_vcfs` | — | CSV `patient_id,vcf[,sample]`; see *Germline genotypes from WGS* |
 | `--numbat_germline_min_dp` / `--numbat_germline_min_gq` | `10` / `20` | WGS genotype filters |
 | `--numbat_germline_min_concordance` | `0.8` | identity check before phasing; `0` turns it off |
+| `--numbat_init_dist` | `exact` | how the initial tree's cell-cell distances are computed. `exact`: the same Euclidean distances as Numbat, by blocked matrix multiplication -- on DFCI1 (35,144 cells) 5 min instead of 6 h 25 m, identical tree (merge heights within 5e-13, identical partitions at k = 2-10, 20, 50); on Numbat's example data identical final calls. `pca`: distances on `--numbat_init_pcs` components -- faster again but moved 3-5% of DFCI1 cells between the starting groups; only for individuals too large for `exact` (distance memory = cells^2 x 4 bytes, Ward holds about two copies). `numbat`: Numbat's own |
+| `--numbat_init_pcs` | `50` | components for `--numbat_init_dist pca` |
+| `--numbat_skip_nj` | `auto` | neighbour-joining (O(cells^3)) as a phylogeny seed. `auto` skips it above `--numbat_nj_max_cells` and seeds NNI with UPGMA alone (run_numbat's `skip_nj`); `true` / `false` force it |
+| `--numbat_nj_max_cells` | `10000` | threshold for `auto` |
 | `--skip_numbat_figures` | `false` | turn off `NUMBAT_REPORT` |
 | `--numbat_figures_ncut` | `4` | clone counts to re-cut the phylogeny at; `0` skips that panel |
 | `--numbat_figures_min_clone_cells` | `50` | smaller clones are left out of the pseudobulk figure |

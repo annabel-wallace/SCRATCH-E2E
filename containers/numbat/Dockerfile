@@ -17,3 +17,10 @@ FROM pkharchenkolab/numbat-rbase:latest
 RUN apt-get update --allow-releaseinfo-change \
  && apt-get install -y --no-install-recommends procps \
  && rm -rf /var/lib/apt/lists/*
+
+# fastcluster: drop-in hclust without stats::hclust's 65,536-observation limit.
+# Numbat builds trees over cells (initial Ward tree, UPGMA phylogeny seed), so an
+# individual above 65,536 cells cannot finish without it (GBM DFCI7, 79,687
+# cells). bin/numbat_run.R uses it when present. Tag: procps-fastcluster.
+RUN Rscript -e 'install.packages("fastcluster", repos = "https://cloud.r-project.org")' \
+ && Rscript -e 'library(fastcluster); stopifnot(packageVersion("fastcluster") >= "1.2")'
