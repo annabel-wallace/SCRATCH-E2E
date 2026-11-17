@@ -146,6 +146,19 @@ def _read_s3_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(body))
 
 
+def _s3_glob_has_objects(glob: str):
+    """True/False whether anything exists under the fixed prefix of an s3:// glob
+    (the part before the first wildcard); None when it cannot be listed."""
+    try:
+        import boto3
+        bucket, _, key = glob[len("s3://"):].partition("/")
+        prefix = key.split("*", 1)[0]
+        r = boto3.client("s3").list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        return r.get("KeyCount", 0) > 0
+    except Exception:
+        return None
+
+
 def merge_exp_tables(tables: dict) -> pd.DataFrame:
     """Stack the per-dataset metadata tables. Pure, so it can be tested off-platform.
 
@@ -198,6 +211,16 @@ def expand_to_all_inputs(ds: PreprocessDataset, start: str) -> None:
         ds.add_param("input_gex_matrices_path", gex, overwrite=True)
         for g in gex:
             ds.logger.info(f"  count matrices: {g}")
+        # A dataset with no cellranger outputs (e.g. a QC-output dataset selected
+        # instead of its alignment dataset) used to surface as "no readable
+        # metadata table", which points at the wrong thing.
+        empty = [ds_id for ds_id, g in zip(ids, gex) if _s3_glob_has_objects(g) is False]
+        if empty:
+            raise ValueError(
+                "No cellranger count outputs (data/data/SCRATCH_ALIGN:CELLRANGER_COUNT/) in input "
+                f"dataset(s): {', '.join(empty)}. Starting at '{start}' needs ALIGNMENT datasets "
+                "(the SCRATCH align / aligndemultiplex output); a QC or other pipeline's output "
+                "dataset has no count matrices. Select the alignment dataset instead.")
     else:
         ds.logger.info("  input_gex_matrices_path does not name the first input; left as is.")
 
