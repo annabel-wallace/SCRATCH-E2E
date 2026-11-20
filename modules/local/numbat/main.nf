@@ -498,6 +498,9 @@ process NUMBAT_RUN {
         export NUMBAT_INIT_PCS=${params.numbat_init_pcs}
         export NUMBAT_SKIP_NJ=${params.numbat_skip_nj}
         export NUMBAT_NJ_MAX_CELLS=${params.numbat_nj_max_cells}
+        # Forked workers from memory (bin/numbat_run.R), not one per CPU.
+        export NUMBAT_MEM_GB=${task.memory ? task.memory.toGiga() : ''}
+        export NUMBAT_NCORES=${params.numbat_ncores}
 
         # Echo the parameters BEFORE running. bin/ IS hashed per referenced
         # script -- editing bin/numbat_run.R does re-run this task, measured on
@@ -507,6 +510,12 @@ process NUMBAT_RUN {
         # seconds of the task starting.
         echo "[numbat] group=${group_id} libraries=${alleleList.size()} min_LLR=${params.numbat_min_llr} max_entropy=${params.numbat_max_entropy} min_cells=${params.numbat_min_cells} t=${params.numbat_t} max_iter=${params.numbat_max_iter} init_dist=${params.numbat_init_dist} skip_nj=${params.numbat_skip_nj} cpus=${task.cpus}"
 
+        # If the R parent is killed (OOM), its forked mclapply workers survive,
+        # keep the task's stdout open, and the Batch job never ends: on Cirro
+        # 2026-11-17 both jobs sat "RUNNING" for days after "Killed". So run it
+        # without -e, kill any leftover workers (forks keep the parent's
+        # command line), then pass the exit status on so Nextflow retries.
+        set +e
         numbat_run.R \\
             ${counts} ${cellmap} ${refcells} \\
             ${group_id} numbat ${task.cpus} \\
@@ -514,6 +523,10 @@ process NUMBAT_RUN {
             ${params.numbat_min_llr} ${params.numbat_min_ref_cells} \\
             ${params.numbat_max_entropy} \\
             ${alleleList.join(' ')}
+        rc=\$?
+        set -e
+        pkill -9 -f 'numbat_run[.]R' 2>/dev/null || true
+        [ "\$rc" -eq 0 ] || exit "\$rc"
 
         # Numbat's own diagnostic plots, when it produced any.
         find numbat/${group_id} -name "*.png" -exec cp {} figures/numbat/ \\; 2>/dev/null || true

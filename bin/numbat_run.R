@@ -381,6 +381,35 @@ message(sprintf("[%s] phylogeny seed: %s", group_id,
                                      if (skip_nj_mode == "auto") sprintf(" > %d", nj_max_cells) else "")
                 else "better of UPGMA and neighbour-joining"))
 
+# ---- worker count from memory, not CPUs ------------------------------------
+# run_numbat forks `ncores` R workers (parallel::mclapply) for the per-cell
+# evaluation and NNI, and each fork ends up holding its own copy of what it
+# touches. Cirro 2026-11-17 (792f4c3d): with ncores = 48 both DFCI1 (59.5k
+# cells) and DFCI7 (79.7k) were OOM-killed at 128 GB in "Evaluating CNV per
+# cell", while the main process reported 11.5 / 15.6 GB. The previous run
+# (3f4cc38b), 16 workers at 128 GB, got DFCI1 through that step -- the one
+# measurement this estimate rests on: about 8 GB per worker at 60k cells,
+# scaled linearly by cell count, after reserving a base for the parent.
+# The BLAS distance step uses threads (OPENBLAS_NUM_THREADS), not forks, so it
+# keeps every CPU. NUMBAT_NCORES (a number) overrides; 'auto' computes.
+mem_gb <- suppressWarnings(as.numeric(Sys.getenv("NUMBAT_MEM_GB", "")))
+nc_env <- Sys.getenv("NUMBAT_NCORES", "auto")
+if (nc_env != "auto" && nzchar(nc_env)) {
+  workers <- max(1L, min(ncores, as.integer(nc_env)))
+  why <- "set by --numbat_ncores"
+} else if (is.finite(mem_gb) && mem_gb > 0) {
+  per_worker <- max(2, 8 * ncol(count_mat) / 60000)
+  # parent peaked at 11.5 GB (59.5k cells) / 15.6 GB (79.7k): keep ~2x that
+  base_gb    <- max(24, 0.4 * ncol(count_mat) / 1000)
+  workers <- as.integer(max(1, min(ncores, floor((mem_gb - base_gb) / per_worker))))
+  why <- sprintf("%.0f GB task, ~%.1f GB per worker at %d cells, %.0f GB kept for the parent",
+                 mem_gb, per_worker, ncol(count_mat), base_gb)
+} else {
+  workers <- ncores
+  why <- "task memory unknown, using every CPU"
+}
+message(sprintf("[%s] numbat workers: %d of %d CPUs (%s)", group_id, workers, ncores, why))
+
 res <- try(
   numbat::run_numbat(
     count_mat = count_mat,
@@ -388,7 +417,8 @@ res <- try(
     df_allele = df_allele,
     genome = Sys.getenv("NUMBAT_GENOME", "hg38"),
     t = t_param,
-    ncores = ncores,
+    ncores = workers,
+    ncores_nni = workers,
     max_iter = max_iter,
     min_LLR = min_llr,
     max_entropy = max_entropy,

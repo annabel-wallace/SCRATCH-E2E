@@ -407,6 +407,7 @@ HRS371755, 92–93% of target sites came out phased (chr1, chr22).
 | `--numbat_init_pcs` | `50` | components for `--numbat_init_dist pca` |
 | `--numbat_skip_nj` | `auto` | neighbour-joining (O(cells^3)) as a phylogeny seed. `auto` skips it above `--numbat_nj_max_cells` and seeds NNI with UPGMA alone (run_numbat's `skip_nj`); `true` / `false` force it |
 | `--numbat_nj_max_cells` | `10000` | threshold for `auto` |
+| `--numbat_ncores` | `auto` | forked R workers for Numbat's per-cell evaluation and NNI. `auto` = as many as the task's memory allows (~8 GB per worker per 60k cells, after a base for the parent), capped at the task's CPUs; one per CPU OOM-killed 60k- and 80k-cell individuals at 128 GB. The distance step keeps all CPUs (BLAS threads). A number forces it |
 | `--skip_numbat_figures` | `false` | turn off `NUMBAT_REPORT` |
 | `--numbat_figures_ncut` | `4` | clone counts to re-cut the phylogeny at; `0` skips that panel |
 | `--numbat_figures_min_clone_cells` | `50` | smaller clones are left out of the pseudobulk figure |
