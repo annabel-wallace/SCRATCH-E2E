@@ -370,6 +370,12 @@ message(sprintf("[%s] initial clustering distances: %s (%d cells)", group_id,
                        pca = sprintf("top %d principal components", init_pcs),
                        "Numbat's own parallelDist"), ncol(count_mat)))
 
+# init_k: number of starting groups cut from the initial Ward tree (Numbat's
+# own default is 3). Set by --numbat_init_k via NUMBAT_INIT_K.
+init_k <- suppressWarnings(as.integer(Sys.getenv("NUMBAT_INIT_K", "3")))
+if (is.na(init_k) || init_k < 1L) init_k <- 3L
+message(sprintf("[%s] init_k = %d starting cell groups", group_id, init_k))
+
 skip_nj_mode <- tolower(Sys.getenv("NUMBAT_SKIP_NJ", "false"))
 nj_max_cells <- suppressWarnings(as.integer(Sys.getenv("NUMBAT_NJ_MAX_CELLS", "10000")))
 skip_nj <- switch(skip_nj_mode,
@@ -422,6 +428,7 @@ res <- try(
     max_iter = max_iter,
     min_LLR = min_llr,
     max_entropy = max_entropy,
+    init_k = init_k,
     skip_nj = skip_nj,
     plot = FALSE,
     out_dir = out_sub
